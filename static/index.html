@@ -129,7 +129,8 @@
   .card-days { flex: none; text-align: right; font-size: 13px; }
   .card-days b { display: block; font-size: 22px; line-height: 1.1; font-variant-numeric: tabular-nums; }
   .card-bar { height: 4px; margin-top: 10px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
-  .card-bar span { height: 4px; background: var(--green); }
+  .card-bar { display: flex; }
+  .card-bar span { height: 4px; }
 
   .toolbar { display: flex; gap: 4px; align-items: center; margin-bottom: 2px; flex-wrap: wrap; }
   .toolbar .spacer { flex: 1; }
@@ -1850,13 +1851,13 @@ async function showHome() {
       : info.days > 0 ? `<span class="exam-${info.level}"><b>${info.days}</b>${info.days === 1 ? "day" : "days"}</span>`
       : info.days === 0 ? `<span class="exam-today"><b>today</b></span>`
       : `<span class="exam-past">done</span>`;
-    const percent = s.topics ? Math.round((s.known / s.topics) * 100) : 0;
+    const pct = n => (s.topics ? (n / s.topics) * 100 : 0);
     return `
       <button class="subject-card" onclick="openSubject(${s.id})">
         <span class="card-main">
           <span class="card-name">${escapeHtml(s.name)}</span>
-          <span class="card-sub">${info.label ? `exam ${info.label} · ` : ""}${s.known}/${s.topics} topics known</span>
-          <span class="card-bar"><span style="width: ${percent}%"></span></span>
+          <span class="card-sub">${info.label ? `exam ${info.label} · ` : ""}${s.topics ? `${s.known}/${s.topics} topics known` : "no materials yet"}${s.review ? ` · ${s.review} to review` : ""}</span>
+          <span class="card-bar"><span class="seg-known" style="width: ${pct(s.known)}%"></span><span class="seg-review" style="width: ${pct(s.review)}%"></span></span>
         </span>
         <span class="card-days">${days}</span>
       </button>`;
@@ -2685,7 +2686,7 @@ async function loadBlocks(subjectId) {
       <div class="block">
         <div class="block-head" onclick="toggleBlock(${b.block_id})">
             <span class="block-name"><span class="arrow" id="arrow-${b.block_id}">▸</span>${escapeHtml(b.name)}</span>
-            <span class="block-meta">${b.topics} topics<span class="formula-progress" id="formulas-${b.block_id}">${formulaLabel(b)}</span></span>
+            <span class="block-meta">${b.topics} topics<span class="formula-progress" id="job-${b.block_id}">${b.job ? ` · ${escapeHtml(b.job.stage)}...` : ""}</span><span class="formula-progress" id="formulas-${b.block_id}">${formulaLabel(b)}</span></span>
             <span class="block-actions">
               ${iconButton("rename", "rename block", `event.stopPropagation(); renameBlock(${b.block_id})`)}
               ${iconButton("delete", "delete block", `event.stopPropagation(); deleteBlock(${b.block_id})`, "danger")}
@@ -2703,6 +2704,9 @@ async function loadBlocks(subjectId) {
   }).join("");
 
   watchFormulas(subjectId, blocks);
+  // Lectures still processing after a reload: the folded block shows the stage and
+  // redraws when they are done, without unfolding.
+  blocks.filter(b => b.job).forEach(b => watchJob(b.job.job_id, b.block_id, false));
 
   // Redrawing collapsed every block; reopen the ones that were open. Ids from
   // another subject are not on the page any more and are forgotten.
@@ -3305,9 +3309,12 @@ function setUploadStatus(blockId, text, failed = false) {
   }
   const row = document.getElementById(`upload-${blockId}`);
   if (row) row.hidden = false;
+  const head = document.getElementById(`job-${blockId}`);
+  if (head) head.textContent = failed ? " · failed" : ` · ${text}`;
 }
 
-async function watchJob(jobId, blockId) {
+// reopen: unfold the block when done (an upload made here), or only redraw (found after a reload).
+async function watchJob(jobId, blockId, reopen = true) {
   if (watchedJobs.has(jobId)) return;
   watchedJobs.add(jobId);
 
@@ -3326,7 +3333,7 @@ async function watchJob(jobId, blockId) {
   }
 
   setUploadStatus(blockId, "done");
-  await refresh(blockId);
+  await refresh(reopen ? blockId : null);
   delete uploads[blockId];
 }
 async function makeSummary(topicId, blockId) {
