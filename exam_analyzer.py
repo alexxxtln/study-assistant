@@ -40,8 +40,12 @@ inline \( ... \), display $$ ... $$.
 Rules:
 - After "=== QUESTION" write the number as printed ("1", "2b"), or nothing if there is none
 - "topics": ids from the course topic list below that the question really tests,
-  most specific first, at most 3. Write "topics: none" if nothing fits
+  most specific first, at most 3. A shared word is not enough: a game tree is not
+  a search tree. Write "topics: none" if the course topics do not cover what is tested
 - "continues: yes" only for the rest of a question that started on the previous page
+- A page can end one question and start the next: write the rest of the old one as
+  its own block with "continues: yes", then each new question as its own block with
+  "continues: no". A new heading or a new task always starts a new question
 - Skip the cover page, instructions, point tables and empty answer space
 - If the page has no question at all, answer only: NO QUESTIONS
 
@@ -66,9 +70,12 @@ Rules:
 - After "=== QUESTION" write the task number as printed ("1", "2b"), or nothing if there is none
 - "topics": ids from the course topic list below that the task really practises,
   most specific first, at most 3. Judge by the solution when there is one: the
-  methods it uses are the topics. Write "topics: none" if nothing fits
+  methods it uses are the topics. A shared word is not enough. Write "topics: none"
+  if the course topics do not cover what is practised
 - "continues: yes" for a task or a solution that started on the previous page;
   if the page only has the rest of a solution, write its "topics" line and no text
+- A page can end one task and start the next: write the rest of the old one as its
+  own block with "continues: yes", then each new task as its own block
 - Skip the cover page, instructions and point tables
 - If the page has no task and no solution at all, answer only: NO QUESTIONS
 
@@ -152,17 +159,20 @@ def analyse_exam(source_id: int, on_progress=None) -> dict:
         page = doc[index]
         text = page.get_text("text").strip()
         details = dict(page=index + 1, pages=len(doc), subject=subject_name, topics=topic_lines)
+        # A rate limit can hold a page for many minutes; say so instead of looking stuck.
+        on_wait = on_progress and (lambda seconds, done=index: on_progress(
+            done, len(doc), f" · Groq limit, waiting ~{max(1, round(seconds / 60))} min"))
 
         if math_char_count(page) < MIN_MATH_CHARS and len(text) >= MIN_TEXT_CHARS:
             read_as["text"] += 1
             prompt = template.format(**details, how=", given as its extracted text",
                                      page_text=f"\nPage text:\n{text}\n")
             # Generous budget: this model reasons before answering.
-            answer = ask_model(TEXT_MODEL, prompt, label=f"exam {source_id}", max_tokens=8192)
+            answer = ask_model(TEXT_MODEL, prompt, label=f"exam {source_id}", max_tokens=8192, on_wait=on_wait)
         else:
             read_as["image"] += 1
             prompt = template.format(**details, how="", page_text="")
-            answer = ask_vision(prompt, page_image_url(page), label=f"exam {source_id}")
+            answer = ask_vision(prompt, page_image_url(page), label=f"exam {source_id}", on_wait=on_wait)
 
         if answer is None:
             unreadable.append(index + 1)
@@ -233,7 +243,7 @@ def run_exam_analysis(job_id: int, source_id: int) -> None:
     try:
         result = analyse_exam(
             source_id,
-            on_progress=lambda done, total: set_stage(job_id, f"page {done + 1}/{total}"),
+            on_progress=lambda done, total, note="": set_stage(job_id, f"page {done + 1}/{total}{note}"),
         )
         read_as = result["read_as"]
         message = f"{result['questions']} questions ({read_as['text']} pages as text, {read_as['image']} as images)"

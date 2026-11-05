@@ -106,19 +106,20 @@ def page_image_url(page: pymupdf.Page) -> str:
     return "data:image/png;base64," + base64.b64encode(png).decode()
 
 
-def ask_vision(prompt: str, image_url: str, label: str = "vision") -> str | None:
+def ask_vision(prompt: str, image_url: str, label: str = "vision", on_wait=None) -> str | None:
     """One prompt + one page image to the vision model."""
     content = [
         {"type": "text", "text": prompt},
         {"type": "image_url", "image_url": {"url": image_url}},
     ]
-    return ask_model(VISION_MODEL, content, label)
+    return ask_model(VISION_MODEL, content, label, on_wait=on_wait)
 
 
-def ask_model(model: str, content, label: str, max_tokens: int = 4096) -> str | None:
+def ask_model(model: str, content, label: str, max_tokens: int = 4096, on_wait=None) -> str | None:
     """One user message (text, or text + image) to a Groq model. Waits out rate
     limits as long as needed and retries temporary errors a few times; returns
-    None if there is still no answer. Shared by formula pages and exam analysis."""
+    None if there is still no answer. Shared by formula pages and exam analysis.
+    on_wait(seconds) is called before each wait for a rate limit, so a job can show it."""
     transient = 0
 
     while True:
@@ -133,12 +134,14 @@ def ask_model(model: str, content, label: str, max_tokens: int = 4096) -> str | 
             # The daily token limit refills slowly, so this can be 15 minutes or more.
             wait = float(error.response.headers.get("retry-after") or 60)
             print(f"{label}: rate limit, waiting {wait:.0f}s")
+            if on_wait:
+                on_wait(wait)
             time.sleep(wait)
             continue
         except (InternalServerError, APIConnectionError) as error:
             problem = error
         except APIError as error:
-            print(f"{label}: vision model failed: {error}")
+            print(f"{label}: {model} failed: {error}")
             return None
         else:
             text = re.sub(r"<think>.*?</think>", "", response.choices[0].message.content or "", flags=re.S).strip()

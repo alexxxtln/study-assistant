@@ -27,9 +27,11 @@ from pipeline import fail_interrupted_jobs, run_pipeline
 from summarizer import EmptySummaryError, summarize_topic
 from exam_analyzer import run_exam_analysis
 from math_pages import enqueue_vision_pages, start_worker
+import server_log
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    server_log.start()
     interrupted = fail_interrupted_jobs()
     if interrupted:
         print(f"{interrupted} job(s) were cut off by the restart and are marked failed")
@@ -201,13 +203,14 @@ def list_subjects():
                 "SELECT s.id, s.name, s.exam_date, "
                 "(SELECT count(*) FROM topics t WHERE t.subject_id = s.id), "
                 "(SELECT count(*) FROM topics t WHERE t.subject_id = s.id AND t.status = 'known'), "
-                "s.semester_id "
+                "s.semester_id, "
+                "(SELECT count(*) FROM topics t WHERE t.subject_id = s.id AND t.status = 'review') "
                 "FROM subjects s ORDER BY s.id"
             )
             rows = cur.fetchall()
     return [
         {"id": row[0], "name": row[1], "exam_date": row[2], "topics": row[3], "known": row[4],
-         "semester_id": row[5]}
+         "semester_id": row[5], "review": row[6]}
         for row in rows
     ]
 
@@ -1114,6 +1117,26 @@ def add_questions(cur, files: list[dict]) -> None:
 
 
 
+@app.get("/topics/{topic_id}/questions")
+def topic_questions(topic_id: int):
+    """Exam questions and homework tasks linked to a topic, for the reasons in Focus."""
+    kinds = {**EXAM_KINDS, SourceType.homework.value: "homework"}
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT q.id, q.number, q.text, q.page, s.id, s.filename, s.type "
+                "FROM exam_question_topics qt JOIN exam_questions q ON q.id = qt.question_id "
+                "JOIN sources s ON s.id = q.source_id "
+                "WHERE qt.topic_id = %s AND s.type = ANY(%s) ORDER BY s.id, q.position",
+                (topic_id, list(kinds)),
+            )
+            return [
+                {"question_id": r[0], "number": r[1], "text": r[2], "page": r[3],
+                 "source_id": r[4], "filename": r[5], "kind": kinds[r[6]]}
+                for r in cur.fetchall()
+            ]
+
+
 @app.post("/sources/{source_id}/analyse")
 def start_exam_analysis(source_id: int, background_tasks: BackgroundTasks):
     with get_connection() as conn:
@@ -1273,7 +1296,12 @@ def list_blocks(subject_id: int):
                 "count(DISTINCT tc.topic_id) FILTER (WHERE t.status = 'known') AS known, "
                 "count(DISTINCT tc.topic_id) FILTER (WHERE t.status = 'review') AS review, "
                 "count(DISTINCT c.id) FILTER (WHERE c.formula_status IS NOT NULL) AS formula_pages, "
-                "count(DISTINCT c.id) FILTER (WHERE c.formula_status IN ('done', 'failed')) AS formula_done "
+                "count(DISTINCT c.id) FILTER (WHERE c.formula_status IN ('done', 'failed')) AS formula_done, "
+                # A lecture of this block still being processed, so a folded block can say so.
+                "(SELECT json_build_object('job_id', j.id, 'stage', j.stage) FROM jobs j "
+                " JOIN sources js ON js.id = j.source_id "
+                " WHERE js.block_id = b.id AND js.type <> 'homework' AND j.status = 'running' "
+                " ORDER BY j.id LIMIT 1) AS job "
                 "FROM blocks b "
                 "LEFT JOIN sources s ON s.block_id = b.id "
                 "LEFT JOIN chunks c ON c.source_id = s.id "
@@ -1293,6 +1321,7 @@ def list_blocks(subject_id: int):
                     "weight": r[5],
                     "status": {"new": r[6], "known": r[7], "review": r[8]},
                     "formulas": {"pages": r[9], "done": r[10]},
+                    "job": r[11],
                 }
                 for r in cur.fetchall()
             ]
